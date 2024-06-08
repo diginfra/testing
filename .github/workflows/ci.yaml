@@ -1,0 +1,50 @@
+#
+# Copyright (C) 2024 The Diginfra Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+
+name: Test on Latest Dev Diginfra
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Diginfra Version
+        default: master
+        required: true
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: Run Tests on diginfra/diginfra image
+    runs-on: ubuntu-latest
+    container:
+      image: diginfra/diginfra:${{ github.event.inputs.version || 'master' }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run tests
+        uses: ./
+        with:
+          test-diginfra: 'true'
+          test-diginfractl: 'true'
+          test-k8saudit: 'true'
+          test-dummy: 'true'
+          show-all: 'true'
+          sudo: ''

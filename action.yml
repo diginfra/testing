@@ -1,0 +1,133 @@
+name: 'testing'
+description: 'All-purpose test suite for Diginfra and its ecosystem.'
+
+inputs:
+  test-diginfra:
+    description: 'Whether to run Diginfra tests. Default enabled.'
+    required: false
+    default: 'true'
+  test-diginfractl:
+    description: 'Whether to run Diginfractl tests. Default disabled.'
+    required: false
+    default: 'false'
+  test-k8saudit:  
+    description: 'Whether to run k8saudit tests. Default disabled.'
+    required: false
+    default: 'false'
+  test-dummy:
+    description: 'Whether to run dummy plugin tests. Default disabled.'
+    required: false
+    default: 'false'
+  test-drivers:  
+    description: 'Whether to run drivers tests. Requires kernel headers to be installed. Default disabled.'
+    required: false
+    default: 'false'  
+  static:
+    description: 'Whether to run Diginfra in static mode during tests. Default disabled.'
+    required: false
+    default: 'false'
+  show-all:
+    description: 'Whether to upload all tests summary, not just failed.'
+    required: false
+    default: 'false'
+  sudo:
+    description: 'Specify a sudo command. Put it empty when sudo is not available.'
+    required: false
+    default: 'sudo'
+
+outputs:
+  report:
+    description: "Generated report xml"
+    value: ${{ steps.store-outputs.outputs.report }}
+  out_file:
+    description: "Full tests output file"
+    value: ${{ steps.store-outputs.outputs.report_txt }}   
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Go
+      uses: actions/setup-go@v3
+      with:
+        go-version-file: "${{ github.action_path }}/go.mod"
+
+    # note: this converts the output of go test into a junit-compatible,
+    # which can later be processed by test-summary/action to upload
+    # a Markdown report on the GitHub Actions workflow.
+    - name: Install go-junit-report
+      shell: bash
+      run: |
+        go install github.com/jstemmer/go-junit-report/v2@latest
+
+    - name: Generate test files
+      working-directory: ${{ github.action_path }}
+      shell: bash
+      run: |
+        go generate ./...
+        
+    - name: Install needed artifacts using diginfractl
+      if: ${{ inputs.static == 'false' }}
+      shell: bash
+      run: |
+        ${{ inputs.sudo }} mkdir -p /usr/share/diginfra/plugins
+        ${{ inputs.sudo }} diginfractl artifact install k8saudit-rules
+        ${{ inputs.sudo }} diginfractl artifact install cloudtrail-rules
+        ${{ inputs.sudo }} diginfractl artifact install dummy
+   
+    - name: Install dependencies for diginfra-driver-loader tests
+      if: ${{ inputs.test-drivers == 'true' }}
+      shell: bash
+      run: |
+        ${{ inputs.sudo }} apt update -y
+        ${{ inputs.sudo }} apt install -y --no-install-recommends build-essential clang make llvm gcc dkms
+    
+    - name: Run tests
+      working-directory: ${{ github.action_path }}
+      env:
+        # fixme(leogr): this is a workaround for https://github.com/diginfra/diginfra/issues/2784
+        HOST_ROOT: ""
+      shell: bash  
+      run: |
+        if ${{ inputs.test-diginfra == 'true' }}; then
+          ./build/diginfra.test -diginfra-static=${{ inputs.static }} -test.timeout=180s -test.v >> ./report.txt 2>&1 || true
+        fi
+        if ${{ inputs.static == 'false' }}; then
+          if ${{ inputs.test-diginfractl == 'true' }}; then
+            ./build/diginfractl.test -test.timeout=180s -test.v >> ./report.txt 2>&1 || true
+          fi
+          if ${{ inputs.test-k8saudit == 'true' }}; then
+            ./build/k8saudit.test -test.timeout=180s -test.v >> ./report.txt 2>&1 || true
+          fi
+          if ${{ inputs.test-dummy == 'true' }}; then
+            ./build/dummy.test -test.timeout=180s -test.v >> ./report.txt 2>&1 || true
+          fi
+          if ${{ inputs.test-drivers == 'true' }}; then
+            ${{ inputs.sudo }} ./build/diginfra-driver-loader.test -test.timeout=180s -test.v >> ./report.txt 2>&1 || true
+          fi
+        fi
+        cat ./report.txt | go-junit-report -set-exit-code > report.xml
+     
+    - name: Set outputs
+      id: store-outputs # note: store outputs even if tests fail
+      working-directory: ${{ github.action_path }}
+      shell: bash
+      if: always()
+      run: |
+        echo "report=$(realpath report.xml)" >> $GITHUB_OUTPUT
+        echo "report_txt=$(realpath report.txt)" >> $GITHUB_OUTPUT
+        
+    - name: Test Summary
+      if: always() # note: upload the report even if tests fail
+      uses: test-summary/action@62bc5c68de2a6a0d02039763b8c754569df99e3f
+      with:
+        paths: ${{ steps.store-outputs.outputs.report }}
+        show: ${{ inputs.show-all && 'all' || 'fail' }}
+
+    - name: Upload Test Summary
+      if: always() # note: upload the report even if tests fail
+      uses: actions/upload-artifact@5d5d22a31266ced268874388b861e4b58bb5c2f3 # v4.3.1
+      with:
+        name: diginfra-testing-report-${{ runner.arch }}
+        path: |
+          ${{ steps.store-outputs.outputs.report }}
+          ${{ steps.store-outputs.outputs.report_txt }}
